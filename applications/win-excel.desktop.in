@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Excel (Windows)
+Comment=Microsoft Excel from the Windows VM via RemoteApp
+Exec=uwsm app -- @WIN_APP@ "C:\\\\Program Files\\\\Microsoft Office\\\\root\\\\Office16\\\\EXCEL.EXE" Excel
+Icon=windows
+Terminal=false
+Type=Application
+Categories=Office;Spreadsheet;

@@ -1,0 +1,121 @@
+#!/bin/bash
+# Open a Windows program from the Omarchy Windows VM as a RemoteApp window.
+# All apps share one RDP connection: the first call starts the connection with a
+# hidden agent (~/.local/share/win-app/win-app-agent.ps1) as its RemoteApp, and every
+# call queues its program for that agent. Separate connections would steal the
+# single Windows session from each other and make the other windows refresh.
+# Starts the VM (kept running) if it isn't up yet.
+#
+# Usage: win-app <program> [name] [cmd-args]
+#   win-app 'C:\Windows\System32\notepad.exe' Notepad
+#   win-app 'C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE' PowerPoint
+
+set -euo pipefail
+
+PROGRAM="${1:?Usage: win-app <program> [name] [cmd-args]}"
+NAME="${2:-$(basename "${PROGRAM//\\//}" .exe)}"
+CMD_ARGS="${3:-}"
+
+HOST=127.0.0.1
+PORT=3389
+CREDENTIALS_FILE="$HOME/.config/windows/credentials"
+STATE_DIR="$HOME/.local/state/win-app"
+QUEUE_DIR="$STATE_DIR/queue"
+PID_FILE="$STATE_DIR/rdp.pid"
+# Paths as the agent sees them through the redirected home drive (+home-drive).
+AGENT='\\tsclient\home\.local\share\win-app\win-app-agent.ps1'
+
+notify() { omarchy-notification-send "Windows VM" "$1" 2>/dev/null || echo "$1" >&2; }
+
+read_credential() {
+  local want="$1" key value
+  [[ -f $CREDENTIALS_FILE ]] || return 1
+  while IFS='=' read -r key value; do
+    [[ $key == "$want" ]] && { printf '%s' "$value"; return 0; }
+  done <"$CREDENTIALS_FILE"
+  return 1
+}
+
+rdp_up() { nc -z -w 1 "$HOST" "$PORT" 2>/dev/null; }
+
+connection_running() {
+  local pid
+  pid=$(cat "$PID_FILE" 2>/dev/null) || return 1
+  [[ -n $pid ]] && tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -q 'xfreerdp3.*win-app-agent'
+}
+
+queue_request() {
+  local tmp
+  tmp=$(mktemp "$QUEUE_DIR/.req.XXXXXX")
+  printf '%s\n%s\n' "$PROGRAM" "$CMD_ARGS" >"$tmp"
+  mv "$tmp" "$QUEUE_DIR/$(date +%s%N).req"
+}
+
+mkdir -p "$QUEUE_DIR"
+
+if connection_running; then
+  queue_request
+  # The agent polls every 2s; if the request is still queued after 6s, the agent
+  # has died (e.g. its window was closed) and the connection is useless. Restart it.
+  for _ in $(seq 1 12); do
+    [[ -z $(find "$QUEUE_DIR" -name '*.req' -print -quit) ]] && exit 0
+    sleep 0.5
+  done
+  kill "$(cat "$PID_FILE")" 2>/dev/null || true
+  sleep 1
+fi
+
+# No live connection: drop requests left over from a connection that died.
+rm -f "$QUEUE_DIR"/*.req
+queue_request
+
+if ! rdp_up; then
+  notify "Starting Windows VM for $NAME..."
+  # Same workaround as windows-vm-launch: dockur sets setgid on ~/Windows,
+  # which trips omarchy-windows-vm's mount safety check.
+  chmod g-s "$HOME/Windows" 2>/dev/null || true
+  # omarchy-windows-vm has no public "start without RDP" action, so call the
+  # same privileged bring-up its launch command uses (one polkit prompt).
+  if ! pkexec /usr/share/omarchy/bin/omarchy-windows-vm __priv up_wait; then
+    notify "Failed to start Windows VM"
+    exit 1
+  fi
+  for _ in $(seq 1 120); do
+    rdp_up && break
+    sleep 1
+  done
+  rdp_up || { notify "Windows VM started but RDP is not reachable"; exit 1; }
+fi
+
+WIN_USER=$(read_credential USERNAME) || WIN_USER="docker"
+WIN_PASS=$(read_credential PASSWORD) || WIN_PASS="admin"
+
+# Skip the Kerberos lookup that stalls FreeRDP offline (see omarchy-windows-vm).
+KRB5_CONF="$HOME/.config/windows/krb5.conf"
+if [[ ! -f $KRB5_CONF ]]; then
+  printf '[libdefaults]\n  dns_lookup_kdc = false\n  dns_lookup_realm = false\n' >"$KRB5_CONF"
+fi
+export KRB5_CONFIG="$KRB5_CONF"
+
+RDP_SCALE=()
+SCALE_PERCENT=$(hyprctl monitors -j | jq -r '.[] | select(.focused == true) | .scale' | awk '{print int($1 * 100)}')
+if ((SCALE_PERCENT >= 170)); then
+  RDP_SCALE=(/scale:180)
+elif ((SCALE_PERCENT >= 130)); then
+  RDP_SCALE=(/scale:140)
+fi
+
+# The redirected drive can take a moment to appear, so wait for the agent before
+# running it. No commas allowed: FreeRDP splits /app options on them.
+AGENT_CMD="-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command for(\$i=0; \$i -lt 30 -and -not (Test-Path '$AGENT'); \$i++){Start-Sleep 1}; & '$AGENT'"
+
+# -WindowStyle Hidden doesn't hide the console in RemoteApp mode, and closing
+# that window would kill the agent, so host it in a headless conhost instead.
+# exec keeps this PID, so the pid file points at xfreerdp3.
+echo $$ >"$PID_FILE"
+exec xfreerdp3 /v:"$HOST:$PORT" /u:"$WIN_USER" /p:"$WIN_PASS" /cert:ignore \
+  /app:"program:C:\\Windows\\System32\\conhost.exe,name:Windows Apps,cmd:--headless powershell.exe $AGENT_CMD" \
+  /wm-class:win-app \
+  /clipboard /sound /microphone /gfx:AVC444 "${RDP_SCALE[@]}" \
+  /auto-reconnect /auto-reconnect-max-retries:20 \
+  +home-drive -wallpaper

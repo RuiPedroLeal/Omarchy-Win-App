@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Notepad (Windows)
+Comment=Notepad from the Windows VM via RemoteApp
+Exec=uwsm app -- @WIN_APP@ "C:\\\\Windows\\\\System32\\\\notepad.exe" Notepad
+Icon=windows
+Terminal=false
+Type=Application
+Categories=Utility;TextEditor;

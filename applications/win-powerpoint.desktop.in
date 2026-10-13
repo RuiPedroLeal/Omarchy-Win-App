@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=PowerPoint (Windows)
+Comment=Microsoft PowerPoint from the Windows VM via RemoteApp
+Exec=uwsm app -- @WIN_APP@ "C:\\\\Program Files\\\\Microsoft Office\\\\root\\\\Office16\\\\POWERPNT.EXE" PowerPoint
+Icon=windows
+Terminal=false
+Type=Application
+Categories=Office;Presentation;
