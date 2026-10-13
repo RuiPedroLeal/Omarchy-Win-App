@@ -1,5 +1,8 @@
 # Omarchy Win-App
 
+> **_NOTE:_**  INITIAL VERSION, HIGHLY EXPERIMENTAL and BUGGY!
+
+
 Open programs from the [Omarchy](https://omarchy.org) Windows VM as normal windows in Hyprland, using RDP RemoteApp, instead of the full Windows desktop.
 
 ```bash
